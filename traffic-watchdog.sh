@@ -1,6 +1,7 @@
 #!/bin/bash
 # 流量限制看门狗: 每 5 分钟查 sing-box clash_api 累计流量, 超 15GB 自动 kill sing-box
 # 15GB 预算依据: Free 计划 $1/月 = 内存(休眠~$0.17) + CPU(~$0.02) + 流量(15GB×$0.05=$0.75)
+# ⚠️ 用 python3 解析 JSON (sed 正则在此环境提取失败, 已验证 2026-08-10)
 LOG=/var/log/watchdog.log
 LIMIT=$((15 * 1024 * 1024 * 1024))
 
@@ -10,8 +11,8 @@ log "watchdog started, limit=${LIMIT} bytes (15GB)"
 while true; do
   TR=$(curl -s -m 5 http://127.0.0.1:9090/connections 2>/dev/null)
   if [ -n "$TR" ]; then
-    UP=$(echo "$TR" | sed -n 's/.*"uploadTotal":\([0-9]*\).*/\1/p')
-    DOWN=$(echo "$TR" | sed -n 's/.*"downloadTotal":\([0-9]*\).*/\1/p')
+    UP=$(echo "$TR" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uploadTotal',0))" 2>/dev/null)
+    DOWN=$(echo "$TR" | python3 -c "import json,sys; print(json.load(sys.stdin).get('downloadTotal',0))" 2>/dev/null)
     UP=${UP:-0}; DOWN=${DOWN:-0}
     TOTAL=$((UP + DOWN))
     log "usage: up=$((UP/1024/1024))MB down=$((DOWN/1024/1024))MB total=$((TOTAL/1024/1024/1024))GB"
