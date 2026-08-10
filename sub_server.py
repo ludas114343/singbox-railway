@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 """Clash 订阅生成器: 读 sing-box clash_api 真实累计流量 (uploadTotal/downloadTotal)
 生成带 Subscription-Userinfo 头的订阅, Clash Verge Rev / Meta 客户端直接显示已用/总量
+
+环境变量覆盖（跨平台部署）:
+  NODE_HOST  节点域名 (默认从 SUB_URL 推断或必填)
+  SUB_UUID   用户 UUID
+  TOTAL_GB   流量上限 GB (默认 90)
+  EXPIRE_TS  到期 unix 时间戳
 """
-import json, time, urllib.request
+import json, os, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-UUID = "c69d9310-66db-4614-b3b7-0fb01e68b4ec"
-HOST = "singbox-lite-production.up.railway.app"
-TOTAL_BYTES = 15 * 1024 * 1024 * 1024  # 15GB (Free 计划 $1/月预算)
-EXPIRE = 1786939200  # Trial 到期 2026-09-09 前后
+UUID = os.environ.get("SUB_UUID", "c69d9310-66db-4614-b3b7-0fb01e68b4ec")
+HOST = os.environ.get("NODE_HOST", "ws--singbox-lite--tbhrv4d578gv.code.run")
+TOTAL_GB = int(os.environ.get("TOTAL_GB", "90"))
+TOTAL_BYTES = TOTAL_GB * 1024 * 1024 * 1024
+EXPIRE = int(os.environ.get("EXPIRE_TS", "1786939200"))
 
-CLASH_YAML = f"""# Railway Ubuntu 节点 - Clash Meta 订阅
+CLASH_YAML = f"""# Northflank singbox 节点 - Clash Meta 订阅
 # upload=0 download=0 total={TOTAL_BYTES} expire={EXPIRE}
 
 proxies:
-  - name: "Railway-Ubuntu"
+  - name: "NF-Singbox"
     type: vless
     server: {HOST}
     port: 443
@@ -34,7 +41,7 @@ proxy-groups:
     type: select
     proxies:
       - "♻️ 自动选择"
-      - "Railway-Ubuntu"
+      - "NF-Singbox"
       - "DIRECT"
 
   - name: "♻️ 自动选择"
@@ -42,7 +49,7 @@ proxy-groups:
     url: "http://www.gstatic.com/generate_204"
     interval: 300
     proxies:
-      - "Railway-Ubuntu"
+      - "NF-Singbox"
 
 rules:
   - GEOIP,CN,DIRECT
@@ -61,7 +68,6 @@ def get_traffic():
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         up, down = get_traffic()
-        used = up + down
         body = CLASH_YAML.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/yaml; charset=utf-8")
