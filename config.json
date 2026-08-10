@@ -1,0 +1,34 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-ws-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8443,
+      "users": [
+        {
+          "uuid": "c69d9310-66db-4614-b3b7-0fb01e68b4ec"
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/ws"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "experimental": {
+    "clash_api": {
+      "external_controller": "0.0.0.0:9090"
+    }
+  }
+}
