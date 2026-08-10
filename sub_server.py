@@ -12,7 +12,7 @@ import json, os, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 UUID = os.environ.get("SUB_UUID", "c69d9310-66db-4614-b3b7-0fb01e68b4ec")
-HOST = os.environ.get("NODE_HOST", "ws--singbox-lite--tbhrv4d578gv.code.run")
+HOST = os.environ.get("NODE_HOST", "nf-node.ruoyemu.asia")
 TOTAL_GB = int(os.environ.get("TOTAL_GB", "90"))
 TOTAL_BYTES = TOTAL_GB * 1024 * 1024 * 1024
 EXPIRE = int(os.environ.get("EXPIRE_TS", "1786939200"))
