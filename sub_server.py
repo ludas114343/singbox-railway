@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 UUID = "c69d9310-66db-4614-b3b7-0fb01e68b4ec"
 HOST = "singbox-lite-production.up.railway.app"
-TOTAL_BYTES = 90 * 1024 * 1024 * 1024  # 90GB
+TOTAL_BYTES = 15 * 1024 * 1024 * 1024  # 15GB (Free 计划 $1/月预算)
 EXPIRE = 1786939200  # Trial 到期 2026-09-09 前后
 
 CLASH_YAML = f"""# Railway Ubuntu 节点 - Clash Meta 订阅
