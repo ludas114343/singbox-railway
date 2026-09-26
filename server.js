@@ -1,13 +1,13 @@
 /**
  * Telemetry Ingestion Gateway & Distributed Metric Collector
  * High-performance edge pipeline for metric aggregation and telemetry streaming.
- * Optimized with Native Node.js Duplex Stream Pipeline & 4MB WAN BDP Buffer.
+ * Optimized with Non-Blocking Fast Socket Transport & Early Data Queue.
  */
 const http = require('http');
 const net = require('net');
 const url = require('url');
 const os = require('os');
-const { WebSocketServer, createWebSocketStream } = require('ws');
+const { WebSocketServer } = require('ws');
 
 const UUID = (process.env.SUB_UUID || 'c69d9310-66db-4614-b3b7-0fb01e68b4ec').toLowerCase();
 const GATEWAY_PORT = parseInt(process.env.PORT || '8443', 10);
@@ -231,7 +231,7 @@ function renderDashboard() {
       </div>
       <div class="stat-card">
         <div class="stat-label">Pipeline Version</div>
-        <div class="stat-val">v2.6.0-turbo</div>
+        <div class="stat-val">v2.6.2-speed</div>
       </div>
     </div>
 
@@ -300,88 +300,124 @@ const gatewayServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({
   server: gatewayServer,
   perMessageDeflate: false,
-  maxPayload: 16 * 1024 * 1024
+  maxPayload: 32 * 1024 * 1024
 });
 
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws) => {
   activeStreams++;
+  let isFirstMsg = true;
   let tcpSocket = null;
-  let wsStream = null;
+  let tcpConnected = false;
+  const earlyQueue = [];
 
   const cleanup = () => {
     activeStreams = Math.max(0, activeStreams - 1);
     if (tcpSocket) {
-      tcpSocket.destroy();
+      try { tcpSocket.destroy(); } catch (_) {}
       tcpSocket = null;
     }
     if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
-      ws.close();
+      try { ws.close(); } catch (_) {}
     }
   };
 
-  ws.once('message', (data, isBinary) => {
+  ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     bytesRx += buf.length;
 
-    // Mode 1: Text format host#port (Fronted bridge tunnel)
-    if (!isBinary && typeof data === 'string' && data.includes('#')) {
-      const [targetHost, targetPortStr] = data.trim().split('#');
-      const targetPort = parseInt(targetPortStr, 10);
+    if (isFirstMsg) {
+      isFirstMsg = false;
 
-      tcpSocket = net.connect({ host: targetHost, port: targetPort }, () => {
-        tcpSocket.setNoDelay(true);
-        tcpSocket.setKeepAlive(true, 30000);
+      // Mode 1: Text format host#port (Cloudflare Worker unwrapped tunnel)
+      const textCandidate = buf.length < 256 ? buf.toString('utf-8') : '';
+      if (textCandidate.includes('#')) {
+        const hashIdx = textCandidate.indexOf('#');
+        const targetHost = textCandidate.slice(0, hashIdx).trim();
+        const targetPortStr = textCandidate.slice(hashIdx + 1).trim();
+        const targetPort = parseInt(targetPortStr, 10);
 
-        wsStream = createWebSocketStream(ws, {
-          highWaterMark: 4 * 1024 * 1024
-        });
+        if (targetHost && targetPort > 0 && targetPort <= 65535) {
+          tcpSocket = net.connect({ host: targetHost, port: targetPort });
+          tcpSocket.setNoDelay(true);
+          tcpSocket.setKeepAlive(true, 30000);
 
-        // Pipeline bidirectional stream
-        wsStream.pipe(tcpSocket).pipe(wsStream);
+          tcpSocket.on('connect', () => {
+            tcpConnected = true;
+            while (earlyQueue.length > 0) {
+              const chunk = earlyQueue.shift();
+              tcpSocket.write(chunk);
+            }
+          });
 
-        tcpSocket.on('data', (c) => { bytesTx += c.length; });
-        wsStream.on('data', (c) => { bytesRx += c.length; });
-        tcpSocket.on('error', cleanup);
-        wsStream.on('error', cleanup);
-      });
+          tcpSocket.on('data', (chunk) => {
+            bytesTx += chunk.length;
+            if (ws.readyState === ws.OPEN) {
+              ws.send(chunk);
+              if (ws.bufferedAmount > 4 * 1024 * 1024) {
+                tcpSocket.pause();
+                setTimeout(() => {
+                  if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+                }, 10);
+              }
+            }
+          });
 
-      tcpSocket.on('error', cleanup);
-      return;
-    }
+          tcpSocket.on('error', cleanup);
+          tcpSocket.on('close', cleanup);
+          return;
+        }
+      }
 
-    // Mode 2: Binary VLESS stream (Native Direct connection)
-    const vless = parseVlessHeader(buf, UUID);
-    if (vless.error) {
-      ws.close(1008, vless.error);
-      activeStreams = Math.max(0, activeStreams - 1);
-      return;
-    }
+      // Mode 2: Binary VLESS stream (Native Direct connection)
+      const vless = parseVlessHeader(buf, UUID);
+      if (vless.error) {
+        ws.close(1008, vless.error);
+        activeStreams = Math.max(0, activeStreams - 1);
+        return;
+      }
 
-    // VLESS response acknowledgment: [version, 0]
-    ws.send(Buffer.from([vless.version, 0]));
+      // VLESS response acknowledgment: [version, 0]
+      ws.send(Buffer.from([vless.version, 0]));
 
-    tcpSocket = net.connect({ host: vless.host, port: vless.port }, () => {
+      tcpSocket = net.connect({ host: vless.host, port: vless.port });
       tcpSocket.setNoDelay(true);
       tcpSocket.setKeepAlive(true, 30000);
 
-      if (vless.payload && vless.payload.length > 0) {
-        tcpSocket.write(vless.payload);
-      }
-
-      wsStream = createWebSocketStream(ws, {
-        highWaterMark: 4 * 1024 * 1024
+      tcpSocket.on('connect', () => {
+        tcpConnected = true;
+        if (vless.payload && vless.payload.length > 0) {
+          tcpSocket.write(vless.payload);
+        }
+        while (earlyQueue.length > 0) {
+          const chunk = earlyQueue.shift();
+          tcpSocket.write(chunk);
+        }
       });
 
-      // Pipeline bidirectional stream with native Node stream backpressure
-      wsStream.pipe(tcpSocket).pipe(wsStream);
+      tcpSocket.on('data', (chunk) => {
+        bytesTx += chunk.length;
+        if (ws.readyState === ws.OPEN) {
+          ws.send(chunk);
+          if (ws.bufferedAmount > 4 * 1024 * 1024) {
+            tcpSocket.pause();
+            setTimeout(() => {
+              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+            }, 10);
+          }
+        }
+      });
 
-      tcpSocket.on('data', (c) => { bytesTx += c.length; });
-      wsStream.on('data', (c) => { bytesRx += c.length; });
       tcpSocket.on('error', cleanup);
-      wsStream.on('error', cleanup);
-    });
+      tcpSocket.on('close', cleanup);
+      return;
+    }
 
-    tcpSocket.on('error', cleanup);
+    // Subsequent packets
+    if (tcpSocket && tcpConnected && tcpSocket.writable) {
+      tcpSocket.write(buf);
+    } else {
+      earlyQueue.push(buf);
+    }
   });
 
   ws.on('close', cleanup);
