@@ -300,10 +300,16 @@ const gatewayServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({
   server: gatewayServer,
   perMessageDeflate: false,
-  maxPayload: 32 * 1024 * 1024
+  maxPayload: 32 * 1024 * 1024,
+  handleProtocols: (protocols) => {
+    for (const p of protocols) {
+      if (p) return p;
+    }
+    return false;
+  }
 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   activeStreams++;
   let isFirstMsg = true;
   let tcpSocket = null;
@@ -321,94 +327,109 @@ wss.on('connection', (ws) => {
     }
   };
 
+  const handleFirstPayload = (buf) => {
+    isFirstMsg = false;
+
+    // Mode 1: Text format host#port (Cloudflare Worker unwrapped tunnel)
+    const textCandidate = buf.length < 256 ? buf.toString('utf-8') : '';
+    if (textCandidate.includes('#')) {
+      const hashIdx = textCandidate.indexOf('#');
+      const targetHost = textCandidate.slice(0, hashIdx).trim();
+      const targetPortStr = textCandidate.slice(hashIdx + 1).trim();
+      const targetPort = parseInt(targetPortStr, 10);
+
+      if (targetHost && targetPort > 0 && targetPort <= 65535) {
+        tcpSocket = net.connect({ host: targetHost, port: targetPort, highWaterMark: 1024 * 1024 });
+        tcpSocket.setNoDelay(true);
+        tcpSocket.setKeepAlive(true, 30000);
+
+        tcpSocket.on('connect', () => {
+          tcpConnected = true;
+          while (earlyQueue.length > 0) {
+            const chunk = earlyQueue.shift();
+            tcpSocket.write(chunk);
+          }
+        });
+
+        tcpSocket.on('data', (chunk) => {
+          bytesTx += chunk.length;
+          if (ws.readyState === ws.OPEN) {
+            ws.send(chunk);
+            if (ws.bufferedAmount > 4 * 1024 * 1024) {
+              tcpSocket.pause();
+              setTimeout(() => {
+                if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+              }, 10);
+            }
+          }
+        });
+
+        tcpSocket.on('error', cleanup);
+        tcpSocket.on('close', cleanup);
+        return;
+      }
+    }
+
+    // Mode 2: Binary VLESS stream (Native Direct connection with Early Data)
+    const vless = parseVlessHeader(buf, UUID);
+    if (vless.error) {
+      ws.close(1008, vless.error);
+      activeStreams = Math.max(0, activeStreams - 1);
+      return;
+    }
+
+    // VLESS response acknowledgment: [version, 0]
+    ws.send(Buffer.from([vless.version, 0]));
+
+    tcpSocket = net.connect({ host: vless.host, port: vless.port, highWaterMark: 1024 * 1024 });
+    tcpSocket.setNoDelay(true);
+    tcpSocket.setKeepAlive(true, 30000);
+
+    tcpSocket.on('connect', () => {
+      tcpConnected = true;
+      if (vless.payload && vless.payload.length > 0) {
+        tcpSocket.write(vless.payload);
+      }
+      while (earlyQueue.length > 0) {
+        const chunk = earlyQueue.shift();
+        tcpSocket.write(chunk);
+      }
+    });
+
+    tcpSocket.on('data', (chunk) => {
+      bytesTx += chunk.length;
+      if (ws.readyState === ws.OPEN) {
+        ws.send(chunk);
+        if (ws.bufferedAmount > 4 * 1024 * 1024) {
+          tcpSocket.pause();
+          setTimeout(() => {
+            if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+          }, 10);
+        }
+      }
+    });
+
+    tcpSocket.on('error', cleanup);
+    tcpSocket.on('close', cleanup);
+  };
+
+  // Inspect Early Data from Sec-WebSocket-Protocol (0-RTT support)
+  const earlyProto = req ? req.headers['sec-websocket-protocol'] : null;
+  if (earlyProto) {
+    try {
+      const decoded = Buffer.from(earlyProto, 'base64url');
+      if (decoded.length >= 18) {
+        handleFirstPayload(decoded);
+      }
+    } catch (_) {}
+  }
+
   ws.on('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     bytesRx += buf.length;
 
     if (isFirstMsg) {
-      isFirstMsg = false;
-
-      // Mode 1: Text format host#port (Cloudflare Worker unwrapped tunnel)
-      const textCandidate = buf.length < 256 ? buf.toString('utf-8') : '';
-      if (textCandidate.includes('#')) {
-        const hashIdx = textCandidate.indexOf('#');
-        const targetHost = textCandidate.slice(0, hashIdx).trim();
-        const targetPortStr = textCandidate.slice(hashIdx + 1).trim();
-        const targetPort = parseInt(targetPortStr, 10);
-
-        if (targetHost && targetPort > 0 && targetPort <= 65535) {
-          tcpSocket = net.connect({ host: targetHost, port: targetPort });
-          tcpSocket.setNoDelay(true);
-          tcpSocket.setKeepAlive(true, 30000);
-
-          tcpSocket.on('connect', () => {
-            tcpConnected = true;
-            while (earlyQueue.length > 0) {
-              const chunk = earlyQueue.shift();
-              tcpSocket.write(chunk);
-            }
-          });
-
-          tcpSocket.on('data', (chunk) => {
-            bytesTx += chunk.length;
-            if (ws.readyState === ws.OPEN) {
-              ws.send(chunk);
-              if (ws.bufferedAmount > 4 * 1024 * 1024) {
-                tcpSocket.pause();
-                setTimeout(() => {
-                  if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-                }, 10);
-              }
-            }
-          });
-
-          tcpSocket.on('error', cleanup);
-          tcpSocket.on('close', cleanup);
-          return;
-        }
-      }
-
-      // Mode 2: Binary VLESS stream (Native Direct connection)
-      const vless = parseVlessHeader(buf, UUID);
-      if (vless.error) {
-        ws.close(1008, vless.error);
-        activeStreams = Math.max(0, activeStreams - 1);
-        return;
-      }
-
-      // VLESS response acknowledgment: [version, 0]
-      ws.send(Buffer.from([vless.version, 0]));
-
-      tcpSocket = net.connect({ host: vless.host, port: vless.port });
-      tcpSocket.setNoDelay(true);
-      tcpSocket.setKeepAlive(true, 30000);
-
-      tcpSocket.on('connect', () => {
-        tcpConnected = true;
-        if (vless.payload && vless.payload.length > 0) {
-          tcpSocket.write(vless.payload);
-        }
-        while (earlyQueue.length > 0) {
-          const chunk = earlyQueue.shift();
-          tcpSocket.write(chunk);
-        }
-      });
-
-      tcpSocket.on('data', (chunk) => {
-        bytesTx += chunk.length;
-        if (ws.readyState === ws.OPEN) {
-          ws.send(chunk);
-          if (ws.bufferedAmount > 4 * 1024 * 1024) {
-            tcpSocket.pause();
-            setTimeout(() => {
-              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-            }, 10);
-          }
-        }
-      });
-
-      tcpSocket.on('error', cleanup);
-      tcpSocket.on('close', cleanup);
+      handleFirstPayload(buf);
       return;
     }
 
