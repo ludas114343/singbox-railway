@@ -1,0 +1,15 @@
+{
+  "name": "telemetry-aggregator",
+  "version": "2.5.4",
+  "description": "Distributed telemetry aggregation and metrics ingestion pipeline",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
