@@ -391,16 +391,18 @@ wss.on('connection', (ws, req) => {
           bytesTx += chunk.length;
           if (ws.readyState === ws.OPEN) {
             ws.send(chunk);
-            if (ws.bufferedAmount > 1024 * 1024 && !isTcpPaused) {
+            if (ws.bufferedAmount > 4 * 1024 * 1024 && !isTcpPaused) {
               isTcpPaused = true;
               tcpSocket.pause();
-              const checkDrain = setInterval(() => {
-                if (ws.bufferedAmount < 256 * 1024 || ws.readyState !== ws.OPEN) {
-                  clearInterval(checkDrain);
+              const checkDrain = () => {
+                if (ws.bufferedAmount < 1024 * 1024 || ws.readyState !== ws.OPEN) {
                   isTcpPaused = false;
                   if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+                } else {
+                  setTimeout(checkDrain, 2);
                 }
-              }, 10);
+              };
+              setTimeout(checkDrain, 2);
             }
           }
         });
@@ -423,7 +425,7 @@ wss.on('connection', (ws, req) => {
     // VLESS response acknowledgment: [version, 0]
     ws.send(Buffer.from([vless.version, 0]));
 
-    tcpSocket = net.connect({ host: vless.host, port: vless.port, highWaterMark: 1024 * 1024 });
+    tcpSocket = net.connect({ host: vless.host, port: vless.port, highWaterMark: 2 * 1024 * 1024 });
     tcpSocket.setNoDelay(true);
     tcpSocket.setKeepAlive(true, 30000);
 
@@ -443,16 +445,18 @@ wss.on('connection', (ws, req) => {
       bytesTx += chunk.length;
       if (ws.readyState === ws.OPEN) {
         ws.send(chunk);
-        if (ws.bufferedAmount > 1024 * 1024 && !isTcpPaused) {
+        if (ws.bufferedAmount > 4 * 1024 * 1024 && !isTcpPaused) {
           isTcpPaused = true;
           tcpSocket.pause();
-          const checkDrain = setInterval(() => {
-            if (ws.bufferedAmount < 256 * 1024 || ws.readyState !== ws.OPEN) {
-              clearInterval(checkDrain);
+          const checkDrain = () => {
+            if (ws.bufferedAmount < 1024 * 1024 || ws.readyState !== ws.OPEN) {
               isTcpPaused = false;
               if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+            } else {
+              setTimeout(checkDrain, 2);
             }
-          }, 10);
+          };
+          setTimeout(checkDrain, 2);
         }
       }
     });
