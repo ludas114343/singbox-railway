@@ -316,14 +316,49 @@ wss.on('connection', (ws, req) => {
   let tcpConnected = false;
   const earlyQueue = [];
 
-  const cleanup = () => {
+  let isClosed = false;
+  const forceCleanup = () => {
+    if (isClosed) return;
+    isClosed = true;
     activeStreams = Math.max(0, activeStreams - 1);
     if (tcpSocket) {
       try { tcpSocket.destroy(); } catch (_) {}
       tcpSocket = null;
     }
     if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
-      try { ws.close(); } catch (_) {}
+      try { ws.terminate(); } catch (_) {}
+    }
+  };
+
+  const gracefulCloseWs = () => {
+    if (isClosed) return;
+    if (tcpSocket) {
+      try { tcpSocket.destroy(); } catch (_) {}
+      tcpSocket = null;
+    }
+    if (ws.readyState === ws.OPEN) {
+      if (ws.bufferedAmount === 0) {
+        isClosed = true;
+        activeStreams = Math.max(0, activeStreams - 1);
+        try { ws.close(); } catch (_) {}
+      } else {
+        const timer = setInterval(() => {
+          if (ws.bufferedAmount === 0 || ws.readyState !== ws.OPEN) {
+            clearInterval(timer);
+            if (!isClosed) {
+              isClosed = true;
+              activeStreams = Math.max(0, activeStreams - 1);
+              try { ws.close(); } catch (_) {}
+            }
+          }
+        }, 15);
+        setTimeout(() => {
+          clearInterval(timer);
+          forceCleanup();
+        }, 8000);
+      }
+    } else {
+      forceCleanup();
     }
   };
 
@@ -351,21 +386,28 @@ wss.on('connection', (ws, req) => {
           }
         });
 
+        let isTcpPaused = false;
         tcpSocket.on('data', (chunk) => {
           bytesTx += chunk.length;
           if (ws.readyState === ws.OPEN) {
             ws.send(chunk);
-            if (ws.bufferedAmount > 4 * 1024 * 1024) {
+            if (ws.bufferedAmount > 1024 * 1024 && !isTcpPaused) {
+              isTcpPaused = true;
               tcpSocket.pause();
-              setTimeout(() => {
-                if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+              const checkDrain = setInterval(() => {
+                if (ws.bufferedAmount < 256 * 1024 || ws.readyState !== ws.OPEN) {
+                  clearInterval(checkDrain);
+                  isTcpPaused = false;
+                  if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+                }
               }, 10);
             }
           }
         });
 
-        tcpSocket.on('error', cleanup);
-        tcpSocket.on('close', cleanup);
+        tcpSocket.on('end', gracefulCloseWs);
+        tcpSocket.on('close', () => {});
+        tcpSocket.on('error', forceCleanup);
         return;
       }
     }
@@ -396,21 +438,28 @@ wss.on('connection', (ws, req) => {
       }
     });
 
+    let isTcpPaused = false;
     tcpSocket.on('data', (chunk) => {
       bytesTx += chunk.length;
       if (ws.readyState === ws.OPEN) {
         ws.send(chunk);
-        if (ws.bufferedAmount > 4 * 1024 * 1024) {
+        if (ws.bufferedAmount > 1024 * 1024 && !isTcpPaused) {
+          isTcpPaused = true;
           tcpSocket.pause();
-          setTimeout(() => {
-            if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+          const checkDrain = setInterval(() => {
+            if (ws.bufferedAmount < 256 * 1024 || ws.readyState !== ws.OPEN) {
+              clearInterval(checkDrain);
+              isTcpPaused = false;
+              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+            }
           }, 10);
         }
       }
     });
 
-    tcpSocket.on('error', cleanup);
-    tcpSocket.on('close', cleanup);
+    tcpSocket.on('end', gracefulCloseWs);
+    tcpSocket.on('close', () => {});
+    tcpSocket.on('error', forceCleanup);
   };
 
   // Inspect Early Data from Sec-WebSocket-Protocol (0-RTT support)
@@ -441,8 +490,8 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', cleanup);
-  ws.on('error', cleanup);
+  ws.on('close', forceCleanup);
+  ws.on('error', forceCleanup);
 });
 
 // --- 2. Subscription & Secondary Server (Port 8080) ---
