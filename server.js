@@ -1,12 +1,13 @@
 /**
  * Telemetry Ingestion Gateway & Distributed Metric Collector
  * High-performance edge pipeline for metric aggregation and telemetry streaming.
+ * Optimized with Native Node.js Duplex Stream Pipeline & 4MB WAN BDP Buffer.
  */
 const http = require('http');
 const net = require('net');
 const url = require('url');
 const os = require('os');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, createWebSocketStream } = require('ws');
 
 const UUID = (process.env.SUB_UUID || 'c69d9310-66db-4614-b3b7-0fb01e68b4ec').toLowerCase();
 const GATEWAY_PORT = parseInt(process.env.PORT || '8443', 10);
@@ -230,7 +231,7 @@ function renderDashboard() {
       </div>
       <div class="stat-card">
         <div class="stat-label">Pipeline Version</div>
-        <div class="stat-val">v2.5.4</div>
+        <div class="stat-val">v2.6.0-turbo</div>
       </div>
     </div>
 
@@ -296,15 +297,19 @@ const gatewayServer = http.createServer((req, res) => {
   res.end(renderDashboard());
 });
 
-const wss = new WebSocketServer({ server: gatewayServer });
+const wss = new WebSocketServer({
+  server: gatewayServer,
+  perMessageDeflate: false,
+  maxPayload: 16 * 1024 * 1024
+});
 
 wss.on('connection', (ws, req) => {
   activeStreams++;
-  let isFirstMsg = true;
   let tcpSocket = null;
-  const earlyQueue = [];
+  let wsStream = null;
 
   const cleanup = () => {
+    activeStreams = Math.max(0, activeStreams - 1);
     if (tcpSocket) {
       tcpSocket.destroy();
       tcpSocket = null;
@@ -314,97 +319,74 @@ wss.on('connection', (ws, req) => {
     }
   };
 
-  ws.on('message', (data, isBinary) => {
+  ws.once('message', (data, isBinary) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     bytesRx += buf.length;
 
-    if (isFirstMsg) {
-      isFirstMsg = false;
+    // Mode 1: Text format host#port (Fronted bridge tunnel)
+    if (!isBinary && typeof data === 'string' && data.includes('#')) {
+      const [targetHost, targetPortStr] = data.trim().split('#');
+      const targetPort = parseInt(targetPortStr, 10);
 
-      // Mode 1: Text format host#port (Cloudflare Worker unwrapped tunnel)
-      if (!isBinary && typeof data === 'string' && data.includes('#')) {
-        const [targetHost, targetPortStr] = data.trim().split('#');
-        const targetPort = parseInt(targetPortStr, 10);
+      tcpSocket = net.connect({ host: targetHost, port: targetPort }, () => {
+        tcpSocket.setNoDelay(true);
+        tcpSocket.setKeepAlive(true, 30000);
 
-        tcpSocket = net.connect({ host: targetHost, port: targetPort }, () => {
-          while (earlyQueue.length > 0) {
-            const chunk = earlyQueue.shift();
-            tcpSocket.write(chunk);
-          }
+        wsStream = createWebSocketStream(ws, {
+          highWaterMark: 4 * 1024 * 1024
         });
 
-        setupSocketPiping(ws, tcpSocket, cleanup);
-        return;
-      }
+        // Pipeline bidirectional stream
+        wsStream.pipe(tcpSocket).pipe(wsStream);
 
-      // Mode 2: Binary VLESS stream (Native Direct connection)
-      const vless = parseVlessHeader(buf, UUID);
-      if (vless.error) {
-        ws.close(1008, vless.error);
-        return;
-      }
-
-      // VLESS response acknowledgment: [version, 0]
-      ws.send(Buffer.from([vless.version, 0]));
-
-      tcpSocket = net.connect({ host: vless.host, port: vless.port }, () => {
-        if (vless.payload && vless.payload.length > 0) {
-          tcpSocket.write(vless.payload);
-        }
-        while (earlyQueue.length > 0) {
-          const chunk = earlyQueue.shift();
-          tcpSocket.write(chunk);
-        }
+        tcpSocket.on('data', (c) => { bytesTx += c.length; });
+        wsStream.on('data', (c) => { bytesRx += c.length; });
+        tcpSocket.on('error', cleanup);
+        wsStream.on('error', cleanup);
       });
 
-      setupSocketPiping(ws, tcpSocket, cleanup);
+      tcpSocket.on('error', cleanup);
       return;
     }
 
-    // Subsequent packets
-    if (tcpSocket && tcpSocket.writable) {
-      if (!tcpSocket.write(buf)) {
-        ws.pause();
-        tcpSocket.once('drain', () => ws.resume());
-      }
-    } else {
-      earlyQueue.push(buf);
+    // Mode 2: Binary VLESS stream (Native Direct connection)
+    const vless = parseVlessHeader(buf, UUID);
+    if (vless.error) {
+      ws.close(1008, vless.error);
+      activeStreams = Math.max(0, activeStreams - 1);
+      return;
     }
-  });
 
-  ws.on('close', () => {
-    activeStreams = Math.max(0, activeStreams - 1);
-    cleanup();
-  });
+    // VLESS response acknowledgment: [version, 0]
+    ws.send(Buffer.from([vless.version, 0]));
 
-  ws.on('error', () => {
-    activeStreams = Math.max(0, activeStreams - 1);
-    cleanup();
-  });
-});
+    tcpSocket = net.connect({ host: vless.host, port: vless.port }, () => {
+      tcpSocket.setNoDelay(true);
+      tcpSocket.setKeepAlive(true, 30000);
 
-function setupSocketPiping(ws, tcpSocket, cleanup) {
-  tcpSocket.on('data', (chunk) => {
-    bytesTx += chunk.length;
-    if (ws.readyState === ws.OPEN) {
-      ws.send(chunk, (err) => {
-        if (err) cleanup();
+      if (vless.payload && vless.payload.length > 0) {
+        tcpSocket.write(vless.payload);
+      }
+
+      wsStream = createWebSocketStream(ws, {
+        highWaterMark: 4 * 1024 * 1024
       });
-      if (ws.bufferedAmount > 256 * 1024) {
-        tcpSocket.pause();
-        // @ts-ignore
-        ws._socket?.once('drain', () => tcpSocket.resume());
-      }
-    }
+
+      // Pipeline bidirectional stream with native Node stream backpressure
+      wsStream.pipe(tcpSocket).pipe(wsStream);
+
+      tcpSocket.on('data', (c) => { bytesTx += c.length; });
+      wsStream.on('data', (c) => { bytesRx += c.length; });
+      tcpSocket.on('error', cleanup);
+      wsStream.on('error', cleanup);
+    });
+
+    tcpSocket.on('error', cleanup);
   });
 
-  tcpSocket.on('end', () => {
-    if (ws.readyState === ws.OPEN) ws.close();
-  });
-
-  tcpSocket.on('error', () => cleanup());
-  tcpSocket.on('close', () => cleanup());
-}
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
+});
 
 // --- 2. Subscription & Secondary Server (Port 8080) ---
 const CLASH_YAML = `# Telemetry Gateway Subscription - Node US-Central
@@ -438,7 +420,6 @@ rules:
 
 const subServer = http.createServer((req, res) => {
   const reqUrl = url.parse(req.url, true);
-  const ua = (req.headers['user-agent'] || '').toLowerCase();
 
   if (reqUrl.pathname === '/health' || reqUrl.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
