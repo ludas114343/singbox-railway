@@ -404,30 +404,47 @@ wss.on('connection', (ws, req) => {
           }
         });
 
+        let txQueue = [];
+        let txLen = 0;
         let isTcpPaused = false;
+        let flushScheduled = false;
+
+        const flushTx = () => {
+          flushScheduled = false;
+          if (txLen === 0 || ws.readyState !== ws.OPEN) return;
+          const merged = txQueue.length === 1 ? txQueue[0] : Buffer.concat(txQueue, txLen);
+          txQueue = [];
+          txLen = 0;
+          ws.send(merged, () => {
+            if (isTcpPaused && ws.bufferedAmount < 256 * 1024) {
+              isTcpPaused = false;
+              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+            }
+          });
+          if (ws.bufferedAmount > 2 * 1024 * 1024 && !isTcpPaused) {
+            isTcpPaused = true;
+            if (tcpSocket && !tcpSocket.destroyed) tcpSocket.pause();
+          }
+        };
+
         tcpSocket.on('data', (chunk) => {
           bytesTx += chunk.length;
           if (ws.readyState === ws.OPEN) {
-            ws.send(chunk);
-            if (ws.bufferedAmount > 4 * 1024 * 1024 && !isTcpPaused) {
-              isTcpPaused = true;
-              tcpSocket.pause();
-              if (ws._socket && !ws._socket.destroyed) {
-                ws._socket.once('drain', () => {
-                  isTcpPaused = false;
-                  if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-                });
-              } else {
-                setTimeout(() => {
-                  isTcpPaused = false;
-                  if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-                }, 10);
-              }
+            txQueue.push(chunk);
+            txLen += chunk.length;
+            if (txLen >= 64 * 1024) {
+              flushTx();
+            } else if (!flushScheduled) {
+              flushScheduled = true;
+              setImmediate(flushTx);
             }
           }
         });
 
-        tcpSocket.on('end', gracefulCloseWs);
+        tcpSocket.on('end', () => {
+          flushTx();
+          gracefulCloseWs();
+        });
         tcpSocket.on('close', () => {});
         tcpSocket.on('error', forceCleanup);
         return;
@@ -462,32 +479,50 @@ wss.on('connection', (ws, req) => {
       }
     });
 
-    let isTcpPaused = false;
+    let txQueue2 = [];
+    let txLen2 = 0;
+    let isTcpPaused2 = false;
+    let flushScheduled2 = false;
+
+    const flushTx2 = () => {
+      flushScheduled2 = false;
+      if (txLen2 === 0 || ws.readyState !== ws.OPEN) return;
+      const merged = txQueue2.length === 1 ? txQueue2[0] : Buffer.concat(txQueue2, txLen2);
+      txQueue2 = [];
+      txLen2 = 0;
+      ws.send(merged, () => {
+        if (isTcpPaused2 && ws.bufferedAmount < 256 * 1024) {
+          isTcpPaused2 = false;
+          if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+        }
+      });
+      if (ws.bufferedAmount > 2 * 1024 * 1024 && !isTcpPaused2) {
+        isTcpPaused2 = true;
+        if (tcpSocket && !tcpSocket.destroyed) tcpSocket.pause();
+      }
+    };
+
     tcpSocket.on('data', (chunk) => {
       bytesTx += chunk.length;
       if (ws.readyState === ws.OPEN) {
-        ws.send(chunk);
-        if (ws.bufferedAmount > 4 * 1024 * 1024 && !isTcpPaused) {
-          isTcpPaused = true;
-          tcpSocket.pause();
-          if (ws._socket && !ws._socket.destroyed) {
-            ws._socket.once('drain', () => {
-              isTcpPaused = false;
-              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-            });
-          } else {
-            setTimeout(() => {
-              isTcpPaused = false;
-              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-            }, 10);
-          }
+        txQueue2.push(chunk);
+        txLen2 += chunk.length;
+        if (txLen2 >= 64 * 1024) {
+          flushTx2();
+        } else if (!flushScheduled2) {
+          flushScheduled2 = true;
+          setImmediate(flushTx2);
         }
       }
     });
 
-    tcpSocket.on('end', gracefulCloseWs);
+    tcpSocket.on('end', () => {
+      flushTx2();
+      gracefulCloseWs();
+    });
     tcpSocket.on('close', () => {});
     tcpSocket.on('error', forceCleanup);
+
   };
 
   // Inspect Early Data from Sec-WebSocket-Protocol (0-RTT support)
