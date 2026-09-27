@@ -7,13 +7,8 @@
     {
       "type": "vless",
       "tag": "vless-ws-in",
-      "listen": "0.0.0.0",
-      "listen_port": 8443,
-      "tcp_fast_open": true,
-      "multiplex": {
-        "enabled": true,
-        "padding": true
-      },
+      "listen": "127.0.0.1",
+      "listen_port": 8444,
       "users": [
         {
           "uuid": "c69d9310-66db-4614-b3b7-0fb01e68b4ec"
