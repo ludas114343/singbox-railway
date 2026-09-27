@@ -252,6 +252,16 @@ function renderDashboard() {
 
 // --- 1. Gateway Server (Port 8443) ---
 const gatewayServer = http.createServer((req, res) => {
+  if (req.method === 'HEAD') {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Length': Buffer.byteLength(renderDashboard()),
+      'Cache-Control': 'public, max-age=3600'
+    });
+    res.end();
+    return;
+  }
+
   const reqUrl = url.parse(req.url, true);
 
   if (reqUrl.pathname === '/health' || reqUrl.pathname === '/healthz') {
@@ -311,6 +321,12 @@ const wss = new WebSocketServer({
 
 wss.on('connection', (ws, req) => {
   activeStreams++;
+  if (ws._socket) {
+    ws._socket.setNoDelay(true);
+    ws._socket.setKeepAlive(true, 30000);
+    if (ws._socket._writableState) ws._socket._writableState.highWaterMark = 4 * 1024 * 1024;
+    if (ws._socket._readableState) ws._socket._readableState.highWaterMark = 4 * 1024 * 1024;
+  }
   let isFirstMsg = true;
   let tcpSocket = null;
   let tcpConnected = false;
@@ -374,9 +390,11 @@ wss.on('connection', (ws, req) => {
       const targetPort = parseInt(targetPortStr, 10);
 
       if (targetHost && targetPort > 0 && targetPort <= 65535) {
-        tcpSocket = net.connect({ host: targetHost, port: targetPort, highWaterMark: 1024 * 1024 });
+        tcpSocket = net.connect({ host: targetHost, port: targetPort });
         tcpSocket.setNoDelay(true);
         tcpSocket.setKeepAlive(true, 30000);
+        if (tcpSocket._writableState) tcpSocket._writableState.highWaterMark = 4 * 1024 * 1024;
+        if (tcpSocket._readableState) tcpSocket._readableState.highWaterMark = 4 * 1024 * 1024;
 
         tcpSocket.on('connect', () => {
           tcpConnected = true;
@@ -394,15 +412,17 @@ wss.on('connection', (ws, req) => {
             if (ws.bufferedAmount > 4 * 1024 * 1024 && !isTcpPaused) {
               isTcpPaused = true;
               tcpSocket.pause();
-              const checkDrain = () => {
-                if (ws.bufferedAmount < 1024 * 1024 || ws.readyState !== ws.OPEN) {
+              if (ws._socket && !ws._socket.destroyed) {
+                ws._socket.once('drain', () => {
                   isTcpPaused = false;
                   if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-                } else {
-                  setTimeout(checkDrain, 2);
-                }
-              };
-              setTimeout(checkDrain, 2);
+                });
+              } else {
+                setTimeout(() => {
+                  isTcpPaused = false;
+                  if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+                }, 10);
+              }
             }
           }
         });
@@ -425,9 +445,11 @@ wss.on('connection', (ws, req) => {
     // VLESS response acknowledgment: [version, 0]
     ws.send(Buffer.from([vless.version, 0]));
 
-    tcpSocket = net.connect({ host: vless.host, port: vless.port, highWaterMark: 2 * 1024 * 1024 });
+    tcpSocket = net.connect({ host: vless.host, port: vless.port });
     tcpSocket.setNoDelay(true);
     tcpSocket.setKeepAlive(true, 30000);
+    if (tcpSocket._writableState) tcpSocket._writableState.highWaterMark = 4 * 1024 * 1024;
+    if (tcpSocket._readableState) tcpSocket._readableState.highWaterMark = 4 * 1024 * 1024;
 
     tcpSocket.on('connect', () => {
       tcpConnected = true;
@@ -448,15 +470,17 @@ wss.on('connection', (ws, req) => {
         if (ws.bufferedAmount > 4 * 1024 * 1024 && !isTcpPaused) {
           isTcpPaused = true;
           tcpSocket.pause();
-          const checkDrain = () => {
-            if (ws.bufferedAmount < 1024 * 1024 || ws.readyState !== ws.OPEN) {
+          if (ws._socket && !ws._socket.destroyed) {
+            ws._socket.once('drain', () => {
               isTcpPaused = false;
               if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
-            } else {
-              setTimeout(checkDrain, 2);
-            }
-          };
-          setTimeout(checkDrain, 2);
+            });
+          } else {
+            setTimeout(() => {
+              isTcpPaused = false;
+              if (tcpSocket && !tcpSocket.destroyed) tcpSocket.resume();
+            }, 10);
+          }
         }
       }
     });
