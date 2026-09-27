@@ -1,18 +1,12 @@
-FROM alpine:3.20
+FROM node:20-alpine
 
-RUN apk add --no-cache wget curl bash python3 ca-certificates tzdata && \
-    wget -q -O /tmp/sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.18/sing-box-1.13.18-linux-amd64-musl.tar.gz && \
-    tar -xzf /tmp/sb.tar.gz -C /tmp && \
-    cp /tmp/sing-box-1.13.18-linux-amd64-musl/sing-box /usr/local/bin/sing-box && \
-    rm -rf /tmp/sb.tar.gz /tmp/sing-box-1.13.18-linux-amd64-musl && \
-    chmod +x /usr/local/bin/sing-box
+WORKDIR /app
 
-COPY config.json /etc/sing-box/config.json
-COPY start.sh /usr/local/bin/start.sh
-COPY traffic-watchdog.sh /usr/local/bin/traffic-watchdog.sh
-COPY sub_server.py /usr/local/bin/sub_server.py
-RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/traffic-watchdog.sh
+COPY package.json ./
+RUN npm install --production
+
+COPY server.js ./
 
 EXPOSE 8443 8080
 
-CMD ["/usr/local/bin/start.sh"]
+CMD ["node", "server.js"]
