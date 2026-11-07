@@ -11,11 +11,10 @@ COPY server.js ./
 COPY singbox.json.tpl ./
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh \
- && VER=$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -o '"tag_name": *"v[^"]*"' | head -1 | sed 's/.*"v//;s/"//') \
- && echo "[build] sing-box v${VER}" \
- && curl -sL -o /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
+ && SB_VER=1.14.4 \
+ && curl -fsSL -o /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz" \
  && tar -xzf /tmp/sb.tar.gz -C /tmp \
- && mv /tmp/sing-box-${VER}-linux-amd64/sing-box /app/sing-box \
+ && mv /tmp/sing-box-${SB_VER}-linux-amd64/sing-box /app/sing-box \
  && rm -rf /tmp/sb.tar.gz /tmp/sing-box-* \
  && /app/sing-box version
 
