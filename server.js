@@ -558,29 +558,130 @@ wss.on('connection', (ws, req) => {
 });
 
 // --- 2. Subscription & Secondary Server (Port 8080) ---
-const CLASH_YAML = `# Telemetry Gateway Subscription - Node US-Central
+const CLASH_YAML = `# Telemetry Gateway Subscription - verified nodes (2026-11-07)
 proxies:
-  - name: "🇺🇸 NF美东-原生直连"
+  - name: "🇺🇸 Wasmer美西-原生直连"
     type: vless
-    server: ${NODE_HOST}
+    server: edgetunnel-us-la.wasmer.app
     port: 443
-    uuid: ${UUID}
+    uuid: 78174327-45d8-42ef-a61d-abf885950d9d
     network: ws
     tls: true
     udp: true
-    servername: ${NODE_HOST}
+    servername: edgetunnel-us-la.wasmer.app
     client-fingerprint: chrome
     ws-opts:
-      path: "/ws"
+      path: "/"
       headers:
-        Host: ${NODE_HOST}
+        Host: edgetunnel-us-la.wasmer.app
+  - name: "🇺🇸 Wasmer美东-原生直连"
+    type: vless
+    server: edgetunnel-us-east.wasmer.app
+    port: 443
+    uuid: 78174327-45d8-42ef-a61d-abf885950d9d
+    network: ws
+    tls: true
+    udp: true
+    servername: edgetunnel-us-east.wasmer.app
+    client-fingerprint: chrome
+    ws-opts:
+      path: "/"
+      headers:
+        Host: edgetunnel-us-east.wasmer.app
+  - name: "🇨🇦 Wasmer加拿大-原生直连"
+    type: vless
+    server: edgetunnel-canada.wasmer.app
+    port: 443
+    uuid: 78174327-45d8-42ef-a61d-abf885950d9d
+    network: ws
+    tls: true
+    udp: true
+    servername: edgetunnel-canada.wasmer.app
+    client-fingerprint: chrome
+    ws-opts:
+      path: "/"
+      headers:
+        Host: edgetunnel-canada.wasmer.app
+  - name: "🇫🇷 Wasmer法国-原生直连"
+    type: vless
+    server: edgetunnel-fr.wasmer.app
+    port: 443
+    uuid: 78174327-45d8-42ef-a61d-abf885950d9d
+    network: ws
+    tls: true
+    udp: true
+    servername: edgetunnel-fr.wasmer.app
+    client-fingerprint: chrome
+    ws-opts:
+      path: "/"
+      headers:
+        Host: edgetunnel-fr.wasmer.app
+  - name: "🇺🇸 NF美东-原生直连"
+    type: vless
+    server: ws--singbox-lite--tbhrv4d578gv.code.run
+    port: 443
+    uuid: c69d9310-66db-4614-b3b7-0fb01e68b4ec
+    network: ws
+    tls: true
+    udp: true
+    servername: ws--singbox-lite--tbhrv4d578gv.code.run
+    client-fingerprint: chrome
+    ws-opts:
+      path: "/"
+      headers:
+        Host: ws--singbox-lite--tbhrv4d578gv.code.run
+  - name: "🇪🇺 NF欧洲-原生直连"
+    type: vless
+    server: ws--singbox-eu--lkc76mfhjtps.code.run
+    port: 443
+    uuid: c69d9310-66db-4614-b3b7-0fb01e68b4ec
+    network: ws
+    tls: true
+    udp: true
+    servername: ws--singbox-eu--lkc76mfhjtps.code.run
+    client-fingerprint: chrome
+    ws-opts:
+      path: "/"
+      headers:
+        Host: ws--singbox-eu--lkc76mfhjtps.code.run
 
 proxy-groups:
   - name: "🚀 节点选择"
     type: select
     proxies:
+      - "🇺🇸 Wasmer美西-原生直连"
+      - "🇺🇸 Wasmer美东-原生直连"
+      - "🇨🇦 Wasmer加拿大-原生直连"
+      - "🇫🇷 Wasmer法国-原生直连"
       - "🇺🇸 NF美东-原生直连"
+      - "🇪🇺 NF欧洲-原生直连"
       - "DIRECT"
+  - name: "⚡ 自动选择"
+    type: url-test
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+    proxies:
+      - "🇺🇸 Wasmer美西-原生直连"
+      - "🇺🇸 Wasmer美东-原生直连"
+      - "🇨🇦 Wasmer加拿大-原生直连"
+      - "🇫🇷 Wasmer法国-原生直连"
+      - "🇺🇸 NF美东-原生直连"
+      - "🇪🇺 NF欧洲-原生直连"
+  - name: "🇺🇸 美国节点"
+    type: select
+    proxies:
+      - "🇺🇸 Wasmer美西-原生直连"
+      - "🇺🇸 Wasmer美东-原生直连"
+      - "🇺🇸 NF美东-原生直连"
+      - "🚀 节点选择"
+  - name: "🌍 其它地区"
+    type: select
+    proxies:
+      - "🇨🇦 Wasmer加拿大-原生直连"
+      - "🇫🇷 Wasmer法国-原生直连"
+      - "🇪🇺 NF欧洲-原生直连"
+      - "🚀 节点选择"
 
 rules:
   - GEOIP,CN,DIRECT
