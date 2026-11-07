@@ -697,6 +697,15 @@ const subServer = http.createServer((req, res) => {
     return;
   }
 
+  if (reqUrl.pathname === '/speed') {
+    // plain-HTTP throughput probe for this container (no VLESS/WS/TLS involved)
+    const size = 5 * 1024 * 1024;
+    const chunk = Buffer.alloc(size, 0x61);
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': chunk.length });
+    res.end(chunk);
+    return;
+  }
+
   // Provide Clash YAML subscription with traffic header
   const body = Buffer.from(CLASH_YAML, 'utf-8');
   res.writeHead(200, {
