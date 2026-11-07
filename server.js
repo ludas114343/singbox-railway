@@ -627,7 +627,7 @@ proxies:
     servername: ws--singbox-lite--tbhrv4d578gv.code.run
     client-fingerprint: chrome
     ws-opts:
-      path: "/"
+      path: "/ws"
       headers:
         Host: ws--singbox-lite--tbhrv4d578gv.code.run
   - name: "🇪🇺 NF欧洲-原生直连"
@@ -641,7 +641,7 @@ proxies:
     servername: ws--singbox-eu--lkc76mfhjtps.code.run
     client-fingerprint: chrome
     ws-opts:
-      path: "/"
+      path: "/ws"
       headers:
         Host: ws--singbox-eu--lkc76mfhjtps.code.run
 
